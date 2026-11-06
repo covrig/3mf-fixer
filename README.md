@@ -1,4 +1,4 @@
-<p align="center"><img src="images/3mf.png" alt="3MF Fixer" width="100"></p>
+<p align="center"><img width="500" alt="image" src="https://github.com/user-attachments/assets/53e72f24-760d-4d1b-a04e-feda765e12b8" /></p>
 
 # 3MF Fixer for 3D Builder
 
@@ -8,7 +8,6 @@ Makes 3MF files saved by slicers such as Bambu Studio open in Microsoft 3D Build
 
 **➡ Open the tool: https://covrig.github.io/3mf-fixer/**
 
-<img width="500" alt="image" src="https://github.com/user-attachments/assets/53e72f24-760d-4d1b-a04e-feda765e12b8" />
 ## The problem
 
 After a 3MF file is opened and saved in Bambu Studio (or a slicer based on it, such as OrcaSlicer),
