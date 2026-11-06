@@ -3,7 +3,8 @@
 # 3MF Fixer for 3D Builder
 
 Makes 3MF files saved by slicers such as Bambu Studio open in Microsoft 3D Builder again.
-Your file stays on your device: everything runs in the browser.
+
+**Your file stays on your device: everything runs in the browser.**
 
 **➡ Open the tool: https://covrig.github.io/3mf-fixer/**
 
