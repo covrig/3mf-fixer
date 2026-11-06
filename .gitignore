@@ -1,0 +1,4 @@
+# Test files and OS clutter
+*.3mf
+Thumbs.db
+.DS_Store

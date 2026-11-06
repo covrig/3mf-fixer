@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3MF Fixer for 3D Builder</title>
+<meta name="description" content="Makes 3MF files saved by slicers like Bambu Studio open in Microsoft 3D Builder again. Runs entirely in your browser.">
+<meta name="theme-color" content="#111317">
+<link rel="icon" type="image/png" sizes="32x32" href="images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="images/icon-192.png">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="3MF Fixer for 3D Builder">
+<meta property="og:description" content="Makes 3MF files saved by slicers like Bambu Studio open in Microsoft 3D Builder again. Runs entirely in your browser.">
+<meta property="og:url" content="https://covrig.github.io/3mf-fixer/">
+<meta property="og:image" content="https://covrig.github.io/3mf-fixer/images/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark'; } catch (e) {}
+</script>
+<script src="vendor/jszip.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/three.module.min.js",
+  "three/addons/": "./vendor/three/addons/"
+} }
+</script>
+<style>
+  :root { --radius: 12px; --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  [data-theme="dark"] {
+    --bg: #111317; --card: #1a1d23; --card-2: #23272f; --text: #e7e9ee; --muted: #9aa1ad; --border: #2e333d;
+    --accent: #4f9cff; --accent-text: #fff; --ok: #3ecf8e; --warn: #f5b84a; --err: #ff6b6b;
+    --viewer: #0c0e12; --overlay: rgba(20, 23, 29, .82);
+  }
+  [data-theme="light"] {
+    --bg: #f4f5f8; --card: #fff; --card-2: #eceff4; --text: #1b1f27; --muted: #5d6573; --border: #d9dde5;
+    --accent: #1f6feb; --accent-text: #fff; --ok: #138a55; --warn: #a76a00; --err: #c62828;
+    --viewer: #e6e9ef; --overlay: rgba(255, 255, 255, .85);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); line-height: 1.45; }
+  .app { height: 100vh; height: 100dvh; max-width: 1280px; margin: 0 auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+
+  header { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 12px; flex: none; }
+  h1 { font-size: 1.35rem; margin: 0; letter-spacing: -.01em; min-width: 0; }
+  .tagline { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .9rem; }
+  .tagline a { color: var(--accent); text-decoration: none; white-space: nowrap; } .tagline a:hover { text-decoration: underline; }
+  .hdr-actions { display: flex; gap: 8px; }
+
+  button, .btn {
+    font: inherit; font-size: .95rem; border: 1px solid var(--border); background: var(--card-2); color: var(--text);
+    border-radius: 10px; padding: 7px 14px; cursor: pointer; text-decoration: none; display: inline-flex;
+    align-items: center; justify-content: center; gap: 8px; min-height: 40px; white-space: nowrap;
+  }
+  button:hover, .btn:hover { border-color: var(--accent); }
+  button:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  .btn-ok { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; }
+  [hidden] { display: none !important; }
+
+  /* stage: the 3D view fills all remaining height */
+  .stage { position: relative; flex: 1; min-height: 0; border-radius: var(--radius); overflow: hidden; background: var(--viewer); border: 1px solid var(--border); }
+  .view-wrap { position: absolute; inset: 0; }
+  #viewer { position: absolute; inset: 0; touch-action: none; }
+  .pointer-coarse { display: none; }
+  @media (hover: none) and (pointer: coarse) { .pointer-fine { display: none; } .pointer-coarse { display: inline; } .drop .pointer-coarse { display: block; } }
+  #viewer canvas { display: block; width: 100% !important; height: 100% !important; }
+
+  .drop {
+    position: absolute; inset: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; gap: 6px; border: 2px dashed var(--border); border-radius: var(--radius); cursor: pointer;
+    transition: border-color .15s, background .15s; z-index: 2;
+  }
+  .drop:hover, .drop.dragover, body.dragover .drop { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .drop .big { font-size: 1.15rem; font-weight: 600; }
+  .drop .small { color: var(--muted); font-size: .9rem; }
+  .stage.loaded .drop { display: none; }
+  body.dragover .stage.loaded .drop { display: flex; background: var(--overlay); }
+
+  .overlay {
+    position: absolute; top: 10px; right: 10px; z-index: 3; width: min(350px, calc(100% - 20px)); max-height: calc(100% - 20px); overflow: auto;
+    background: var(--overlay); backdrop-filter: blur(6px); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: .85rem;
+  }
+  .ov-status { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: .92rem; }
+  .ov-status .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--warn); }
+  .ov-status.ok .dot { background: var(--ok); } .ov-status.err .dot { background: var(--err); }
+  .ov-sub { color: var(--muted); margin: 2px 0 8px; }
+  .ov-file { font-weight: 600; word-break: break-all; margin-bottom: 6px; }
+  .overlay dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+  .overlay dt { color: var(--muted); } .overlay dd { margin: 0; }
+  .swatches { display: inline-flex; gap: 4px; flex-wrap: wrap; vertical-align: middle; }
+  .swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border); display: inline-block; }
+  .overlay ul { margin: 8px 0 0; padding-left: 16px; color: var(--muted); }
+  .overlay li + li { margin-top: 2px; }
+
+  .stage-bar { position: absolute; left: 10px; bottom: 10px; z-index: 3; display: flex; align-items: center; gap: 10px; }
+  .hint { font-size: .78rem; color: var(--muted); }
+  .stage-bar button { min-height: 32px; padding: 4px 10px; font-size: .85rem; background: var(--overlay); }
+
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; flex: none; }
+  .actions .spacer { flex: 1; }
+  .actions .size { color: var(--muted); font-size: .9rem; }
+
+  footer { flex: none; display: flex; gap: 8px 24px; flex-wrap: wrap; font-size: .88rem; color: var(--muted); }
+  footer details { flex: 1 1 320px; min-width: 0; }
+  footer summary { cursor: pointer; color: var(--text); }
+  footer .txt { max-height: 22vh; overflow: auto; padding: 4px 2px 0; }
+  footer p, footer ul { margin: 4px 0; } footer ul { padding-left: 18px; }
+
+  @media (max-height: 520px) and (min-width: 701px) {
+    .app { height: auto; min-height: 100dvh; }
+    .stage { flex: none; height: 75vh; min-height: 300px; }
+  }
+  /* phones: page scrolls; order = header, 3D view, buttons, info, explanations */
+  @media (max-width: 700px) {
+    .app { height: auto; min-height: 100dvh; padding: 10px 12px; gap: 10px; }
+    h1 { font-size: 1.12rem; }
+    .tagline { font-size: .85rem; margin-top: 2px; }
+    .hdr-actions button { min-height: 36px; padding: 4px 10px; }
+    .hdr-actions .lbl { display: none; }
+    .stage { display: contents; }
+    .view-wrap { position: relative; order: 1; aspect-ratio: 1 / 1; max-height: 70vh; border-radius: var(--radius); overflow: hidden; background: var(--viewer); border: 1px solid var(--border); }
+    .actions { order: 2; }
+    .overlay { order: 3; position: static; width: auto; max-height: none; backdrop-filter: none; background: var(--card); }
+    footer { order: 4; }
+    .actions button, .actions .btn { flex: 1 1 auto; }
+    #fixButtons { flex: 1 1 100%; } #fixButtons button { flex: 1 1 0; }
+    .actions .spacer { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>3MF Fixer for 3D Builder</h1>
+    <div class="hdr-actions">
+      <button id="openBtn" type="button" title="Open another file" hidden>📂<span class="lbl"> Open</span></button>
+      <button id="themeToggle" type="button" aria-label="Toggle light/dark theme">☀️</button>
+    </div>
+    <p class="tagline">Makes 3MF files saved by slicers such as Bambu Studio open in Microsoft 3D Builder again. Your file stays on your device. <a href="https://github.com/covrig/3mf-fixer">Source on GitHub</a></p>
+  </header>
+
+  <section class="stage" id="stage">
+    <div class="view-wrap">
+      <div id="viewer"></div>
+      <label class="drop" id="drop">
+        <input type="file" id="fileInput" accept=".3mf" hidden>
+        <span class="big pointer-fine">Drop a .3mf file here</span>
+        <span class="small pointer-fine">or click to choose a file</span>
+        <span class="big pointer-coarse">📂 Tap to choose a .3mf file</span>
+        <span class="small pointer-coarse">for example from Files or Downloads</span>
+      </label>
+      <div class="stage-bar" id="stageBar" hidden>
+        <span class="hint"><span class="pointer-fine">Drag to rotate · scroll to zoom</span><span class="pointer-coarse">Drag to rotate · pinch to zoom</span></span>
+        <button id="shuffleBtn" type="button" title="Pick other random colours" hidden>🎲 Shuffle colours</button>
+      </div>
+    </div>
+    <div class="overlay" id="overlay" aria-live="polite" hidden></div>
+  </section>
+
+  <div class="actions" id="actions" hidden>
+    <span id="fixButtons"></span>
+    <span class="spacer"></span>
+    <span class="size" id="sizeInfo"></span>
+    <a class="btn btn-ok" id="download" hidden>⬇ Download</a>
+  </div>
+
+  <footer>
+    <details>
+      <summary>Why can't 3D Builder open the file?</summary>
+      <div class="txt">
+        <p>Some slicers, such as Bambu Studio and slicers based on it (for example OrcaSlicer), save each object's mesh as a
+        separate file inside the 3MF package and link to it from the main model. 3D Builder can't follow those links and
+        shows <em>“Couldn't load that. Error code: 0x80004005”</em>. These slicers also drop the colours you set in 3D Builder.</p>
+      </div>
+    </details>
+    <details>
+      <summary>What does the fix change?</summary>
+      <div class="txt">
+        <ul>
+          <li>All linked meshes are merged into one model. Every part keeps its shape, position and name.</li>
+          <li>Colours stored in the file are kept, including the slicer's filament colours and painted areas.
+            Painted triangles get the colour that covers most of them.</li>
+          <li>If the colours were lost, you choose: a different random colour per part, or one colour for everything.</li>
+          <li>Slicer settings, plates and slicer thumbnails are removed. A small preview picture is stored instead,
+            so the fixed file is usually smaller than the original.</li>
+        </ul>
+      </div>
+    </details>
+  </footer>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const CORE = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
+const PROD = 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06';
+const MAT  = 'http://schemas.microsoft.com/3dmanufacturing/material/2015/02';
+const RELS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+const MODEL_REL = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
+const THUMB_REL = 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail';
+
+// 25 clearly different colours (no greys, nothing too dark to shade) for parts that lost their colours
+const PALETTE = [
+  '#E6194B', '#3CB44B', '#FFE119', '#4363D8', '#F58231', '#9B3FD1', '#42D4F4', '#F032E6', '#BFEF45',
+  '#FABED4', '#469990', '#DCBEFF', '#B5763A', '#FFF3B0', '#B03A48', '#AAFFC3', '#9A9A2E', '#FFD8B1',
+  '#3A4FA8', '#FF8C94', '#2E8B57', '#7FB2FF', '#D4A017', '#C77DFF', '#00A6A6'];
+const FALLBACK = '#B8BEC8';
+
+const $ = (id) => document.getElementById(id);
+const xmlEsc = (s) => String(s).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+const normPath = (p) => '/' + decodeURIComponent(p).replace(/\\/g, '/').replace(/^\/+/, '');
+const children = (el, ns, name) => el ? Array.from(el.children).filter((c) => c.namespaceURI === ns && c.localName === name) : [];
+const child = (el, ns, name) => children(el, ns, name)[0] || null;
+const fmt = (n) => n.toLocaleString('en-US');
+const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
+const shuffled = (a) => { const r = a.slice(); for (let i = r.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [r[i], r[j]] = [r[j], r[i]]; } return r; };
+const toArgb = (hex) => (hex.length === 7 ? hex + 'FF' : hex).toUpperCase();
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})/i.exec(hex || '');
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  return [(v >> 16 & 255) / 255, (v >> 8 & 255) / 255, (v & 255) / 255];
+}
+function parseXml(text, path) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error(`Invalid XML in ${path}`);
+  return doc;
+}
+
+// 3MF matrices are 4x3, row-vector convention: p' = [x y z 1] * M
+const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+const parseMatrix = (s) => { const v = (s || '').trim().split(/\s+/).map(Number); return v.length === 12 && v.every(Number.isFinite) ? v : IDENTITY; };
+function mulMatrix(a, b) { // a then b
+  const r = [];
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++)
+    r.push(a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j] + (i === 3 ? b[9 + j] : 0));
+  return r;
+}
+
+// Per-triangle painting from Bambu Studio / OrcaSlicer (paint_color) and PrusaSlicer (mmu_segmentation).
+// TriangleSelector bitstream: hex nibbles read from the end. Node: low 2 bits = split sides (0 = leaf);
+// leaf: high 2 bits = state, 3 means "3 + next nibble". 0 = unpainted, n = filament n.
+// Split triangles get the state that covers most of their area.
+function paintState(code) {
+  let pos = code.length - 1, guard = 0;
+  const next = () => (pos >= 0 ? parseInt(code[pos--], 16) || 0 : 0);
+  const area = new Map();
+  const walk = (w) => {
+    if (++guard > 100000) return;
+    const n = next(), split = n & 3;
+    if (!split) { let st = n >> 2; if (st === 3) st = 3 + next(); area.set(st, (area.get(st) || 0) + w); return; }
+    for (let i = 0; i <= split; i++) walk(w / (split + 1));
+  };
+  walk(1);
+  let state = 0, best = -1;
+  for (const [st, w] of area) if (w > best) { best = w; state = st; }
+  return { state, split: area.size > 1 };
+}
+
+// ---------- analysis: read the package and flatten all objects ----------
+async function analyze(file) {
+  let zip;
+  try { zip = await JSZip.loadAsync(file); }
+  catch (e) { throw new Error('This is not a valid 3MF file (it is not a ZIP package).'); }
+  const byLower = new Map();
+  zip.forEach((name, e) => { if (!e.dir) byLower.set(normPath(name).toLowerCase(), e); });
+  const entry = (p) => byLower.get(normPath(p).toLowerCase()) || null;
+  const readText = async (p) => { const e = entry(p); if (!e) throw new Error(`Missing part ${p}`); return e.async('string'); };
+
+  const relsEntry = entry('/_rels/.rels');
+  if (!relsEntry) throw new Error('This is not a 3MF file (no _rels/.rels found).');
+  const rels = parseXml(await relsEntry.async('string'), '_rels/.rels');
+  const rootRel = Array.from(rels.getElementsByTagNameNS(RELS, 'Relationship')).find((r) => r.getAttribute('Type') === MODEL_REL);
+  if (!rootRel) throw new Error('No 3D model found in this file.');
+  const rootPath = normPath(rootRel.getAttribute('Target'));
+
+  const docs = new Map();
+  const doc = async (p) => { if (!docs.has(p)) docs.set(p, parseXml(await readText(p), p)); return docs.get(p); };
+  const rootDoc = await doc(rootPath);
+  const unit = rootDoc.documentElement.getAttribute('unit') || 'millimeter';
+  const appMeta = Array.from(rootDoc.getElementsByTagNameNS(CORE, 'metadata')).find((m) => m.getAttribute('name') === 'Application');
+  const application = appMeta ? appMeta.textContent.trim() : '';
+
+  // Slicer metadata (Bambu Studio / OrcaSlicer): names, extruder per object/part, filament colours
+  const nameById = new Map(), extruderById = new Map();
+  let filamentColours = [];
+  const ms = entry('/Metadata/model_settings.config');
+  if (ms) {
+    const cfg = parseXml(await ms.async('string'), 'model_settings.config');
+    for (const o of cfg.getElementsByTagName('object')) {
+      let ext = null;
+      for (const m of o.children) {
+        if (m.tagName !== 'metadata') continue;
+        if (m.getAttribute('key') === 'name') nameById.set(o.getAttribute('id'), m.getAttribute('value'));
+        if (m.getAttribute('key') === 'extruder') ext = m.getAttribute('value');
+      }
+      for (const part of o.getElementsByTagName('part')) {
+        let pext = ext;
+        for (const m of part.getElementsByTagName('metadata')) {
+          if (m.getAttribute('key') === 'name' && !nameById.has(part.getAttribute('id'))) nameById.set(part.getAttribute('id'), m.getAttribute('value'));
+          if (m.getAttribute('key') === 'extruder') pext = m.getAttribute('value');
+        }
+        if (pext) extruderById.set(part.getAttribute('id'), pext);
+      }
+    }
+  }
+  const ps = entry('/Metadata/project_settings.config');
+  if (ps) { try { filamentColours = JSON.parse(await ps.async('string')).filament_colour || []; } catch (e) {} }
+  const isSlicer = !!ms || !!entry('/Metadata/Slic3r_PE.config') || /slic|bambu|orca|cura/i.test(application);
+
+  // id "1" is reserved for the colour material written at generation time
+  let nextId = 1;
+  const newId = () => String(++nextId);
+  const matXml = [], matMap = new Map(), matColours = new Map();
+  const copied = new Set();
+  function copyMaterials(path, d) {
+    if (copied.has(path)) return; copied.add(path);
+    const res = child(d.documentElement, CORE, 'resources');
+    for (const bm of children(res, CORE, 'basematerials')) {
+      const id = newId(); matMap.set(`${path}|${bm.getAttribute('id')}`, id);
+      const bases = children(bm, CORE, 'base');
+      matColours.set(id, bases.map((b) => hexToRgb(b.getAttribute('displaycolor'))));
+      matXml.push(`<basematerials id="${id}">\n${bases.map((b) => `<base name="${xmlEsc(b.getAttribute('name') || '')}" displaycolor="${xmlEsc(b.getAttribute('displaycolor') || FALLBACK)}"/>`).join('\n')}\n</basematerials>\n`);
+    }
+    for (const cg of children(res, MAT, 'colorgroup')) {
+      const id = newId(); matMap.set(`${path}|${cg.getAttribute('id')}`, id);
+      const cols = children(cg, MAT, 'color');
+      matColours.set(id, cols.map((c) => hexToRgb(c.getAttribute('color'))));
+      matXml.push(`<m:colorgroup id="${id}">\n${cols.map((c) => `<m:color color="${xmlEsc(c.getAttribute('color'))}"/>`).join('\n')}\n</m:colorgroup>\n`);
+    }
+  }
+  copyMaterials(rootPath, rootDoc);
+  const filamentRgb = filamentColours.map(hexToRgb);
+  const useFilaments = matMap.size === 0 && filamentColours.length > 0; // filament colours become material id 1
+
+  const objects = [];   // in dependency order: { id, kind, attrs, body, meshIndex?, keep? }
+  const meshes = [];    // { verts, tris, triColour, keepColour, name }
+  const objMap = new Map();
+  const filamentsUsed = new Set();
+  let externalRefs = 0, triTotal = 0, vertTotal = 0, paintedTris = 0, approxTris = 0, triMaterials = 0;
+
+  async function emit(path, oid) {
+    const key = `${path}|${oid}`;
+    if (objMap.has(key)) return objMap.get(key);
+    const d = await doc(path);
+    copyMaterials(path, d);
+    const obj = Array.from(d.getElementsByTagNameNS(CORE, 'object')).find((o) => o.getAttribute('id') === oid);
+    if (!obj) throw new Error(`Object ${oid} not found in ${path}`);
+    const mesh = child(obj, CORE, 'mesh'), comps = child(obj, CORE, 'components');
+    let attrs = ` type="${xmlEsc(obj.getAttribute('type') || 'model')}"`;
+    const name = obj.getAttribute('name') || nameById.get(oid);
+    if (name) attrs += ` name="${xmlEsc(name)}"`;
+    let rec;
+    if (mesh) {
+      let keepPid = null, keepPindex = obj.getAttribute('pindex') || '0';
+      if (obj.getAttribute('pid')) keepPid = matMap.get(`${path}|${obj.getAttribute('pid')}`) || null;
+      if (!keepPid && useFilaments) {
+        const ext = parseInt(extruderById.get(oid), 10);
+        if (ext >= 1 && ext <= filamentColours.length) { keepPid = '1'; keepPindex = String(ext - 1); filamentsUsed.add(ext); }
+      }
+      const palette = keepPid === '1' ? filamentRgb : keepPid ? matColours.get(keepPid) : null;
+      const keepColour = palette ? palette[+keepPindex] || null : null;
+
+      const vEls = child(mesh, CORE, 'vertices')?.children || [];
+      const tEls = child(mesh, CORE, 'triangles')?.children || [];
+      const verts = new Float32Array(vEls.length * 3);
+      const out = ['<mesh><vertices>\n'];
+      for (let i = 0; i < vEls.length; i++) {
+        const v = vEls[i], x = v.getAttribute('x'), y = v.getAttribute('y'), z = v.getAttribute('z');
+        verts[i * 3] = +x; verts[i * 3 + 1] = +y; verts[i * 3 + 2] = +z;
+        out.push(`<vertex x="${x}" y="${y}" z="${z}"/>\n`);
+      }
+      out.push('</vertices><triangles>\n');
+      const tris = new Uint32Array(tEls.length * 3);
+      const triColour = new Array(tEls.length).fill(null);
+      for (let i = 0; i < tEls.length; i++) {
+        const t = tEls[i];
+        const v1 = t.getAttribute('v1'), v2 = t.getAttribute('v2'), v3 = t.getAttribute('v3');
+        tris[i * 3] = +v1; tris[i * 3 + 1] = +v2; tris[i * 3 + 2] = +v3;
+        let extra = '';
+        const tpid = t.getAttribute('pid') ? matMap.get(`${path}|${t.getAttribute('pid')}`) : null;
+        const pk = ['p1', 'p2', 'p3'].filter((k) => t.hasAttribute(k)).map((k) => ` ${k}="${xmlEsc(t.getAttribute(k))}"`).join('');
+        if (tpid) {
+          extra = ` pid="${tpid}"${pk}`; triMaterials++;
+          if (t.hasAttribute('p1')) triColour[i] = matColours.get(tpid)?.[+t.getAttribute('p1')] || null;
+        } else if (keepPid && keepPid !== '1' && t.hasAttribute('p1')) {
+          extra = pk; triMaterials++;
+          triColour[i] = matColours.get(keepPid)?.[+t.getAttribute('p1')] || null;
+        } else if (useFilaments) {
+          const paint = t.getAttribute('paint_color') || t.getAttribute('slic3rpe:mmu_segmentation');
+          if (paint) {
+            const { state, split } = paintState(paint);
+            if (state >= 1 && state <= filamentColours.length) {
+              extra = ` pid="1" p1="${state - 1}"`;
+              triColour[i] = filamentRgb[state - 1];
+              paintedTris++; if (split) approxTris++; filamentsUsed.add(state);
+            }
+          }
+        }
+        out.push(`<triangle v1="${v1}" v2="${v2}" v3="${v3}"${extra}/>\n`);
+      }
+      out.push('</triangles></mesh>');
+      const meshIndex = meshes.length;
+      meshes.push({ verts, tris, triColour, keepColour, name });
+      triTotal += tEls.length; vertTotal += vEls.length;
+      rec = { kind: 'mesh', attrs, body: out.join(''), meshIndex, keepPid, keepPindex };
+    } else if (comps) {
+      const list = [], items = [];
+      for (const c of children(comps, CORE, 'component')) {
+        const ext = c.getAttributeNS(PROD, 'path');
+        if (ext) externalRefs++;
+        const cid = await emit(ext ? normPath(ext) : path, c.getAttribute('objectid'));
+        const tr = c.getAttribute('transform');
+        items.push(`<component objectid="${cid}"${tr ? ` transform="${xmlEsc(tr)}"` : ''}/>`);
+        list.push({ id: cid, m: parseMatrix(tr) });
+      }
+      rec = { kind: 'components', attrs, body: `<components>\n${items.join('\n')}\n</components>`, components: list };
+    } else {
+      throw new Error(`Object ${oid} in ${path} has neither a mesh nor components.`);
+    }
+    rec.id = newId();
+    objMap.set(key, rec.id);
+    objects.push(rec);
+    return rec.id;
+  }
+
+  const buildItems = [];
+  for (const item of children(child(rootDoc.documentElement, CORE, 'build'), CORE, 'item')) {
+    const id = await emit(rootPath, item.getAttribute('objectid'));
+    buildItems.push({ id, m: parseMatrix(item.getAttribute('transform')), tr: item.getAttribute('transform') });
+  }
+  if (!buildItems.length) throw new Error('The model has no build items, so there is nothing to fix.');
+
+  // Colours are "lost" when nothing in the file distinguishes the parts (e.g. everything on one filament)
+  const lost = matMap.size === 0 && triMaterials === 0 && paintedTris === 0 && filamentsUsed.size <= 1;
+  const keptColours = [...matColours.values()].flat().concat(useFilaments ? [...filamentsUsed].map((n) => filamentRgb[n - 1]) : []).filter(Boolean);
+
+  return {
+    fileName: file.name, fileSize: file.size, unit, application, isSlicer, lost,
+    objects, meshes, buildItems, matXml, useFilaments, filamentColours, keptColours,
+    usesMatNs: matXml.some((x) => x.startsWith('<m:')),
+    stats: { externalRefs, meshCount: meshes.length, triTotal, vertTotal, paintedTris, approxTris, items: buildItems.length },
+  };
+}
+
+// ---------- generation ----------
+// mode: 'keep' (colours from file) | 'multi' (random colour per part) | 'single' (one colour)
+function generateModel(r, mode, colours) {
+  const res = [];
+  if (mode === 'keep') {
+    if (r.useFilaments) res.push(`<basematerials id="1">\n${r.filamentColours.map((c, i) => `<base name="Filament ${i + 1}" displaycolor="${xmlEsc(toArgb(c))}"/>`).join('\n')}\n</basematerials>\n`);
+    res.push(...r.matXml);
+  } else {
+    const list = mode === 'single' ? [colours.single] : colours.multi;
+    res.push(`<basematerials id="1">\n${list.map((c, i) => `<base name="Colour ${i + 1}" displaycolor="${toArgb(c)}"/>`).join('\n')}\n</basematerials>\n`);
+  }
+  for (const o of r.objects) {
+    let attrs = o.attrs;
+    if (o.kind === 'mesh') {
+      if (mode === 'keep' && o.keepPid) attrs += ` pid="${o.keepPid}" pindex="${xmlEsc(o.keepPindex)}"`;
+      else if (mode === 'single') attrs += ' pid="1" pindex="0"';
+      else if (mode === 'multi') attrs += ` pid="1" pindex="${o.meshIndex % colours.multi.length}"`;
+    }
+    res.push(`<object id="${o.id}"${attrs}>\n${o.body}\n</object>\n`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<model unit="${xmlEsc(r.unit)}" xml:lang="en-US" xmlns="${CORE}"${mode === 'keep' && r.usesMatNs ? ` xmlns:m="${MAT}"` : ''}>\n<resources>\n` +
+    res.join('') + `</resources>\n<build>\n${r.buildItems.map((b) => `<item objectid="${b.id}"${b.tr ? ` transform="${xmlEsc(b.tr)}"` : ''}/>`).join('\n')}\n</build>\n</model>\n`;
+}
+
+async function buildPackage(model, thumb) {
+  const z = new JSZip(), noDirs = { createFolders: false };
+  z.file('[Content_Types].xml', ['<?xml version="1.0" encoding="UTF-8"?>',
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+    '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>',
+    thumb ? '<Default Extension="jpeg" ContentType="image/jpeg"/>' : null, '</Types>', ''].filter((l) => l !== null).join('\n'), noDirs);
+  z.file('_rels/.rels', ['<?xml version="1.0" encoding="UTF-8"?>', `<Relationships xmlns="${RELS}">`,
+    `<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="${MODEL_REL}"/>`,
+    thumb ? `<Relationship Target="/Metadata/thumbnail.jpeg" Id="rel1" Type="${THUMB_REL}"/>` : null, '</Relationships>', ''].filter((l) => l !== null).join('\n'), noDirs);
+  z.file('3D/3dmodel.model', model, noDirs);
+  if (thumb) z.file('Metadata/thumbnail.jpeg', thumb, { ...noDirs, compression: 'STORE' });
+  return z.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 }, mimeType: 'model/3mf' });
+}
+
+// ---------- 3D preview ----------
+let viewer = null;
+function createViewer(container) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  container.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100000);
+  camera.up.set(0, 0, 1); // 3MF is Z-up
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6); scene.add(sun);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  let mesh = null, grid = null, meshRef = null, triRef = null, home = null, userMoved = false;
+  controls.addEventListener('start', () => { userMoved = true; });
+
+  const setBackground = () => {
+    renderer.setClearColor(getComputedStyle(document.documentElement).getPropertyValue('--viewer').trim() || '#0c0e12');
+    if (grid) grid.material.opacity = document.documentElement.dataset.theme === 'light' ? 0.35 : 0.22;
+  };
+  const resize = () => {
+    const w = container.clientWidth, h = container.clientHeight;
+    if (!w || !h) return;
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+    if (home && !userMoved) goHome(camera.aspect); // keep the model framed until the user moves the camera
+  };
+  new ResizeObserver(resize).observe(container);
+  (function loop() { requestAnimationFrame(loop); controls.update(); sun.position.copy(camera.position); renderer.render(scene, camera); })();
+
+  function fitDistance(radius, aspect) {
+    const v = THREE.MathUtils.degToRad(camera.fov) / 2, h = Math.atan(Math.tan(v) * aspect);
+    return radius / Math.sin(Math.min(v, h)) * 1.45;
+  }
+  function show(r) {
+    if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); }
+    if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+    let count = 0;
+    const countWalk = (id) => { const o = r.objects.find((x) => x.id === id); if (o.kind === 'mesh') count += r.meshes[o.meshIndex].tris.length / 3; else o.components.forEach((c) => countWalk(c.id)); };
+    r.buildItems.forEach((b) => countWalk(b.id));
+    const pos = new Float32Array(count * 9);
+    meshRef = new Int32Array(count); triRef = new Int32Array(count);
+    let t0 = 0;
+    const byId = new Map(r.objects.map((o) => [o.id, o]));
+    const walk = (id, m) => {
+      const o = byId.get(id);
+      if (o.kind === 'components') { for (const c of o.components) walk(c.id, mulMatrix(c.m, m)); return; }
+      const { verts, tris } = r.meshes[o.meshIndex];
+      for (let t = 0; t < tris.length / 3; t++, t0++) {
+        meshRef[t0] = o.meshIndex; triRef[t0] = t;
+        for (let k = 0; k < 3; k++) {
+          const i = tris[t * 3 + k] * 3, x = verts[i], y = verts[i + 1], z = verts[i + 2], p = t0 * 9 + k * 3;
+          pos[p] = x * m[0] + y * m[3] + z * m[6] + m[9];
+          pos[p + 1] = x * m[1] + y * m[4] + z * m[7] + m[10];
+          pos[p + 2] = x * m[2] + y * m[5] + z * m[8] + m[11];
+        }
+      }
+    };
+    r.buildItems.forEach((b) => walk(b.id, b.m));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 9), 3));
+    geo.computeVertexNormals(); // non-indexed => flat normals
+    mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7, metalness: 0.05, side: THREE.DoubleSide }));
+    scene.add(mesh);
+
+    geo.computeBoundingBox();
+    const box = geo.boundingBox, center = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+    const radius = Math.max(size.length() / 2, 1);
+    const gs = Math.ceil(Math.max(size.x, size.y, 10) * 1.6 / 10) * 10;
+    grid = new THREE.GridHelper(gs, Math.min(40, gs / 5), 0x888888, 0x888888);
+    grid.rotation.x = Math.PI / 2; grid.position.set(center.x, center.y, box.min.z);
+    grid.material.transparent = true; scene.add(grid);
+    setBackground(); resize();
+    home = { center, radius, dir: new THREE.Vector3(-0.6, -1, 0.75).normalize() }; userMoved = false;
+    goHome(camera.aspect);
+  }
+  function goHome(aspect) {
+    const dist = fitDistance(home.radius, aspect);
+    controls.target.copy(home.center);
+    camera.position.copy(home.center).addScaledVector(home.dir, dist);
+    camera.near = dist / 100; camera.far = dist * 100; camera.updateProjectionMatrix(); controls.update();
+  }
+  function recolour(fn) { // fn(meshIndex, triIndex) -> [r,g,b]
+    const col = mesh.geometry.attributes.color.array;
+    for (let t = 0; t < meshRef.length; t++) {
+      const c = fn(meshRef[t], triRef[t]);
+      for (let k = 0; k < 9; k += 3) { col[t * 9 + k] = c[0]; col[t * 9 + k + 1] = c[1]; col[t * 9 + k + 2] = c[2]; }
+    }
+    mesh.geometry.attributes.color.needsUpdate = true;
+  }
+  function snapshot(size = 256) { // small JPEG of the default view, used as the file's thumbnail
+    const saved = { pos: camera.position.clone(), target: controls.target.clone(), pr: renderer.getPixelRatio(), clear: renderer.getClearColor(new THREE.Color()) };
+    renderer.setPixelRatio(1); renderer.setSize(size, size, false);
+    camera.aspect = 1; goHome(1); grid.visible = false; renderer.setClearColor(0xf1f3f6);
+    renderer.render(scene, camera);
+    const b64 = renderer.domElement.toDataURL('image/jpeg', 0.82).split(',')[1];
+    grid.visible = true; renderer.setClearColor(saved.clear); renderer.setPixelRatio(saved.pr);
+    const moved = userMoved; userMoved = true; resize(); userMoved = moved;
+    camera.position.copy(saved.pos); controls.target.copy(saved.target); controls.update();
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  }
+  return { show, recolour, snapshot, setBackground };
+}
+
+// ---------- UI ----------
+const state = { r: null, colours: null, previewMode: null, fixedMode: null, url: null, blob: null };
+
+const themeBtn = $('themeToggle');
+function paintThemeButton() {
+  const dark = document.documentElement.dataset.theme !== 'light';
+  themeBtn.textContent = dark ? '☀️' : '🌙';
+  themeBtn.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  viewer?.setBackground();
+}
+themeBtn.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme', next); } catch (e) {}
+  paintThemeButton();
+});
+
+// Perceptual-ish colour distance ("redmean" weighted RGB)
+function colourDist(a, b) {
+  const [r1, g1, b1] = hexToRgb(a).map((v) => v * 255), [r2, g2, b2] = hexToRgb(b).map((v) => v * 255);
+  const rm = (r1 + r2) / 2, dr = r1 - r2, dg = g1 - g2, db = b1 - b2;
+  return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db);
+}
+// Random start, then always the palette colour farthest from those already chosen
+function pickColours(n) {
+  const pool = shuffled(PALETTE), chosen = [pool.shift()];
+  while (chosen.length < Math.min(Math.max(n, 1), PALETTE.length)) {
+    let best = 0, bestD = -1;
+    pool.forEach((c, i) => { const d = Math.min(...chosen.map((x) => colourDist(c, x))); if (d > bestD) { bestD = d; best = i; } });
+    chosen.push(pool.splice(best, 1)[0]);
+  }
+  return { multi: Array.from({ length: Math.max(n, 1) }, (_, i) => chosen[i % chosen.length]), single: chosen[0] };
+}
+function colourFn(mode) {
+  const r = state.r, c = state.colours;
+  const fb = hexToRgb(FALLBACK);
+  if (mode === 'single') { const s = hexToRgb(c.single); return () => s; }
+  if (mode === 'multi') { const m = c.multi.map(hexToRgb); return (mi) => m[mi % m.length]; }
+  return (mi, ti) => r.meshes[mi].triColour[ti] || r.meshes[mi].keepColour || fb;
+}
+function preview(mode) { state.previewMode = mode; viewer?.recolour(colourFn(mode)); renderOverlay(); }
+
+function swatchHtml(list) {
+  const uniq = [...new Map(list.map((c) => [c.join(), c])).values()].slice(0, 16);
+  return uniq.map((c) => `<span class="swatch" style="background:rgb(${c.map((v) => Math.round(v * 255)).join(',')})"></span>`).join('');
+}
+
+function renderOverlay(error) {
+  const ov = $('overlay'); ov.hidden = false;
+  if (error) { ov.innerHTML = `<div class="ov-status err"><span class="dot"></span>Couldn't read this file</div><div class="ov-sub">${xmlEsc(error)}</div>`; return; }
+  const r = state.r, s = r.stats;
+  let head, sub;
+  if (state.fixedMode) { head = '<div class="ov-status ok"><span class="dot"></span>Fixed</div>'; sub = 'Download the file and open it in 3D Builder.'; }
+  else if (s.externalRefs) { head = '<div class="ov-status"><span class="dot"></span>Needs fixing</div>'; sub = `${s.externalRefs} linked part file${s.externalRefs > 1 ? 's' : ''}. 3D Builder can't open this.`; }
+  else { head = '<div class="ov-status ok"><span class="dot"></span>Looks fine</div>'; sub = 'No linked part files. It should open in 3D Builder already.'; }
+  const mode = state.previewMode;
+  const cols = mode === 'single' ? [hexToRgb(state.colours.single)]
+    : mode === 'multi' ? state.colours.multi.slice(0, s.meshCount).map(hexToRgb) : r.keptColours;
+  const rows = [
+    r.application && ['Saved by', xmlEsc(r.application)],
+    ['Objects', `${fmt(s.items)} · ${fmt(s.meshCount)} mesh${s.meshCount === 1 ? '' : 'es'}`],
+    ['Triangles', fmt(s.triTotal)],
+    s.paintedTris && ['Painted', `${fmt(s.paintedTris)} triangles`],
+    ['Colours', cols.length ? `<span class="swatches">${swatchHtml(cols)}</span>` : 'none'],
+    ['Size', state.blob ? `${kb(r.fileSize)} → ${kb(state.blob.size)}` : kb(r.fileSize)],
+  ].filter(Boolean);
+  const notes = [];
+  if (r.lost && r.isSlicer) notes.push('Original colours were lost; new ones are set.');
+  if (s.approxTris) notes.push(`${fmt(s.approxTris)} partly painted triangles get their main colour.`);
+  if (r.isSlicer) notes.push('Slicer settings and plates are not included.');
+  ov.innerHTML = `${head}<div class="ov-sub">${sub}</div><div class="ov-file">${xmlEsc(r.fileName)}</div>
+    <dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    ${notes.length ? `<ul>${notes.map((n) => `<li>${n}</li>`).join('')}</ul>` : ''}`;
+}
+
+function renderButtons() {
+  const r = state.r, box = $('fixButtons');
+  const defs = r.lost && r.stats.meshCount > 1
+    ? [['multi', '🎨 Fix · Multicolour', 'Each part gets its own colour'], ['single', '⬤ Fix · One colour', 'All parts get the same colour']]
+    : [[r.lost ? 'single' : 'keep', '🛠 Fix', r.lost ? 'Fix the file' : 'Fix the file and keep its colours']];
+  box.innerHTML = '';
+  box.style.display = 'inline-flex'; box.style.gap = '10px'; box.style.flexWrap = 'wrap';
+  for (const [mode, label, title] of defs) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label; b.title = title;
+    b.className = state.fixedMode === mode || (!state.fixedMode && mode === defs[0][0]) ? 'btn-primary' : '';
+    b.addEventListener('mouseenter', () => preview(mode));
+    b.addEventListener('focus', () => preview(mode));
+    b.addEventListener('mouseleave', () => preview(state.fixedMode || defs[0][0]));
+    b.addEventListener('click', () => fix(mode));
+    box.appendChild(b);
+  }
+  $('shuffleBtn').hidden = !r.lost;
+}
+
+async function fix(mode) {
+  const r = state.r;
+  preview(mode);
+  let thumb = null;
+  try { thumb = viewer?.snapshot(256) || null; } catch (e) { console.warn('thumbnail failed', e); }
+  const blob = await buildPackage(generateModel(r, mode, state.colours), thumb);
+  if (state.url) URL.revokeObjectURL(state.url);
+  state.url = URL.createObjectURL(blob); state.blob = blob; state.fixedMode = mode;
+  const dl = $('download');
+  dl.href = state.url; dl.download = r.fileName.replace(/\.3mf$/i, '') + '_fixed.3mf'; dl.hidden = false;
+  $('sizeInfo').textContent = `${kb(r.fileSize)} → ${kb(blob.size)}`;
+  window.__lastFix = { blob, name: dl.download, mode };
+  renderButtons(); renderOverlay();
+}
+
+async function handleFile(file) {
+  const stage = $('stage');
+  $('download').hidden = true; $('sizeInfo').textContent = '';
+  Object.assign(state, { r: null, fixedMode: null, blob: null });
+  try {
+    if (typeof JSZip === 'undefined') throw new Error('The ZIP library could not be loaded. Reload the page and try again.');
+    const r = await analyze(file);
+    state.r = r; state.colours = pickColours(r.stats.meshCount);
+    stage.classList.add('loaded'); $('openBtn').hidden = false; $('stageBar').hidden = false; $('actions').hidden = false;
+    try { viewer = viewer || createViewer($('viewer')); viewer.show(r); }
+    catch (e) { console.error(e); viewer = null; $('viewer').innerHTML = '<span class="hint" style="position:absolute;left:12px;top:12px">3D preview not available in this browser.</span>'; }
+    renderButtons();
+    preview(r.lost ? (r.stats.meshCount > 1 ? 'multi' : 'single') : 'keep');
+  } catch (e) {
+    console.error(e);
+    stage.classList.remove('loaded'); $('actions').hidden = true; $('stageBar').hidden = true;
+    renderOverlay(e.message || String(e));
+  }
+}
+window.__handleFile = handleFile; window.__fix = fix; // for testing
+
+$('shuffleBtn').addEventListener('click', async () => {
+  state.colours = pickColours(state.r.stats.meshCount);
+  if (state.fixedMode) await fix(state.fixedMode); else preview(state.previewMode);
+});
+$('openBtn').addEventListener('click', () => $('fileInput').click());
+const input = $('fileInput');
+input.addEventListener('change', () => { if (input.files[0]) handleFile(input.files[0]); input.value = ''; });
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; document.body.classList.add('dragover'); });
+window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragover'); } });
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragover');
+  const f = e.dataTransfer?.files[0]; if (f) handleFile(f);
+});
+const infoBoxes = document.querySelectorAll('footer details');
+infoBoxes.forEach((d) => d.addEventListener('toggle', () => infoBoxes.forEach((o) => { if (o.open !== d.open) o.open = d.open; })));
+paintThemeButton();
+</script>
+</body>
+</html>
